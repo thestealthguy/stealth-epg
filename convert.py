@@ -2,56 +2,71 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import re
 
-def parse_schedule(raw_data):
-    root = ET.Element("tv", {"generator-info-name": "StealthSportsAuto"})
-    
-    # Pre-define channels to avoid duplicates
+def parse_stealth_data(raw_data):
+    root = ET.Element("tv", {"generator-info-name": "StealthSportsMaster"})
     channels_added = set()
 
     for line in raw_data.strip().split('\n'):
-        if not line or '|' not in line: continue
+        if not line or '|' not in line and ':' not in line: continue
         
-        # 1. Basic Extraction
-        parts = line.split('|')
-        channel_header = parts[0].strip() # e.g., US ESPN+ 001
-        event_info = parts[1].strip()     # e.g., TEAM A VS TEAM B (2026-03-08 12:00:00)
+        try:
+            # 1. Standardize Separators
+            line = line.replace(' @ ', ' vs. ').replace(' X ', ' vs. ').replace(' AT ', ' vs. ')
+            
+            # 2. Extract Channel & Event Info
+            parts = line.split('|') if '|' in line else line.split(': ', 1)
+            channel_header = parts[0].strip()
+            remainder = parts[1].strip()
 
-        # 2. Extract Time using Regex
-        time_match = re.search(r'\((\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\)', event_info)
-        if not time_match: continue
-        
-        start_time_str = time_match.group(1)
-        clean_title = event_info.replace(f"({start_time_str})", "").strip()
-        
-        # 3. Create Channel Tag if new
-        chan_id = channel_header.replace(" ", ".")
-        if chan_id not in channels_added:
-            chan_node = ET.SubElement(root, "channel", id=chan_id)
-            ET.SubElement(chan_node, "display-name").text = channel_header
-            channels_added.add(chan_id)
+            # 3. Time Extraction Logic
+            # Matches (YYYY-MM-DD HH:MM:SS) OR START:YYYY-MM-DD HH:MM:SS
+            start_match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', remainder)
+            stop_match = re.search(r'STOP:(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', remainder)
+            
+            if not start_match: continue
+            start_str = start_match.group(1)
+            start_dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+            
+            # 4. Cleaning the Title
+            # Remove time strings and brackets from title
+            clean_title = re.sub(r'\(.*?\)', '', remainder)
+            clean_title = re.sub(r'START:.*', '', clean_title).strip()
+            clean_title = clean_title.replace('_', ' ')
 
-        # 4. Handle Timezones & Durations
-        start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
-        # Standard 4 hour duration (14400 seconds)
-        stop_dt = start_dt + timedelta(hours=4)
-        
-        # Format for XMLTV: YYYYMMDDHHMMSS +offset
-        xml_start = start_dt.strftime("%Y%m%d%H%M%S") + " -0400"
-        xml_stop = stop_dt.strftime("%Y%m%d%H%M%S") + " -0400"
+            # 5. Create Channel ID
+            chan_id = re.sub(r'[^a-zA-Z0-9]', '.', channel_header)
+            if chan_id not in channels_added:
+                chan_node = ET.SubElement(root, "channel", id=chan_id)
+                ET.SubElement(chan_node, "display-name").text = channel_header
+                channels_added.add(chan_id)
 
-        # 5. Build Programme
-        prog = ET.SubElement(root, "programme", start=xml_start, stop=xml_stop, channel=chan_id)
-        ET.SubElement(prog, "title", lang="en").text = clean_title.replace("_", " ").replace("@", "vs.")
-        ET.SubElement(prog, "desc", lang="en").text = f"Live Sports: {channel_header}"
+            # 6. Determine Duration
+            if stop_match:
+                stop_dt = datetime.strptime(stop_match.group(1), "%Y-%m-%d %H:%M:%S")
+            else:
+                stop_dt = start_dt + timedelta(hours=4) # Default for games
 
-    # Save to file
+            # 7. Build Programme
+            xml_start = start_dt.strftime("%Y%m%d%H%M%S") + " -0400"
+            xml_stop = stop_dt.strftime("%Y%m%d%H%M%S") + " -0400"
+
+            prog = ET.SubElement(root, "programme", start=xml_start, stop=xml_stop, channel=chan_id)
+            ET.SubElement(prog, "title", lang="en").text = clean_title
+            ET.SubElement(prog, "desc", lang="en").text = f"Live Coverage on {channel_header}"
+            
+        except Exception as e:
+            continue
+
     tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ", level=0)
     tree.write("sports.xml", encoding="utf-8", xml_declaration=True)
-    print("Success! sports.xml has been created.")
 
-# Add your raw data here or read from a file
+# This reads from a local file named 'input.txt' which you will create in your repo
 if __name__ == "__main__":
-    print("Paste your raw data below, then press Enter and Ctrl+D (or Ctrl+Z on Windows):")
-    import sys
-    data = sys.stdin.read()
-    parse_schedule(data)
+    try:
+        with open('input.txt', 'r') as f:
+            data = f.read()
+            parse_stealth_data(data)
+    except FileNotFoundError:
+        # Create empty file if missing to prevent crash
+        open('sports.xml', 'w').close()
